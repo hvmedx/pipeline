@@ -194,14 +194,14 @@ pipeline {
                 sh '''
                     # Generate JSON report (always succeeds, archived)
                     rm -f trivy-api.json
+                    rm -f trivy-api.stderr
                     mkdir -p .trivy-cache
                     docker run --rm \
                         -v /var/run/docker.sock:/var/run/docker.sock \
                         -v "$PWD/.trivy-cache:/root/.cache/trivy" \
-                        -v "$PWD:/workspace" \
                         aquasec/trivy:latest image \
                         --severity HIGH,CRITICAL --no-progress --timeout 10m --format json \
-                        --output /workspace/trivy-api.json ${IMAGE_FULL} || true
+                        ${IMAGE_FULL} > trivy-api.json 2> trivy-api.stderr || true
                     if [ ! -s trivy-api.json ]; then
                         echo '{"error":"trivy report was not generated"}' > trivy-api.json
                     fi
