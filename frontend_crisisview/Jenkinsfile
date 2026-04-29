@@ -49,6 +49,33 @@ pipeline {
             }
         }
 
+        stage('Test') {
+            steps {
+                dir('frontend_crisisview') {
+                    sh 'npm run test --if-present'
+                }
+            }
+        }
+
+        stage('SCA (npm audit)') {
+            steps {
+                dir('frontend_crisisview') {
+                    sh '''
+                        npm audit --omit=dev --json > npm-audit.json || true
+                        echo "--- npm audit summary ---"
+                        npm audit --omit=dev || true
+                    '''
+                }
+            }
+            post {
+                always {
+                    archiveArtifacts artifacts: 'frontend_crisisview/npm-audit.json',
+                                     allowEmptyArchive: true,
+                                     fingerprint: true
+                }
+            }
+        }
+
         stage('Build') {
             steps {
                 dir('frontend_crisisview') {
@@ -89,6 +116,24 @@ pipeline {
                             -t ${IMAGE_FULL} \
                             -t ${IMAGE_LATEST} .
                     '''
+                }
+            }
+        }
+
+        stage('SBOM (syft)') {
+            steps {
+                sh '''
+                    docker run --rm \
+                        -v /var/run/docker.sock:/var/run/docker.sock \
+                        anchore/syft:latest \
+                        ${IMAGE_FULL} -o spdx-json > sbom-frontend.json
+                '''
+            }
+            post {
+                always {
+                    archiveArtifacts artifacts: 'sbom-frontend.json',
+                                     allowEmptyArchive: true,
+                                     fingerprint: true
                 }
             }
         }
