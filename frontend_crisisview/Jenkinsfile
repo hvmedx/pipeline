@@ -106,7 +106,14 @@ pipeline {
         }
 
         stage('Promote: push DockerHub') {
-            when { branch 'main' }
+            when {
+                expression {
+                    return (env.BRANCH_NAME == 'main') ||
+                           (env.GIT_BRANCH == 'main') ||
+                           (env.GIT_BRANCH == 'origin/main') ||
+                           (env.GIT_LOCAL_BRANCH == 'main')
+                }
+            }
             steps {
                 withCredentials([usernamePassword(credentialsId: env.DOCKERHUB_CREDS,
                                                   usernameVariable: 'DH_USER',
@@ -122,7 +129,14 @@ pipeline {
         }
 
         stage('Deploy: docker run') {
-            when { branch 'main' }
+            when {
+                expression {
+                    return (env.BRANCH_NAME == 'main') ||
+                           (env.GIT_BRANCH == 'main') ||
+                           (env.GIT_BRANCH == 'origin/main') ||
+                           (env.GIT_LOCAL_BRANCH == 'main')
+                }
+            }
             steps {
                 sh '''
                     docker rm -f ${CONTAINER_NAME} 2>/dev/null || true
@@ -138,7 +152,14 @@ pipeline {
         }
 
         stage('Smoke test') {
-            when { branch 'main' }
+            when {
+                expression {
+                    return (env.BRANCH_NAME == 'main') ||
+                           (env.GIT_BRANCH == 'main') ||
+                           (env.GIT_BRANCH == 'origin/main') ||
+                           (env.GIT_LOCAL_BRANCH == 'main')
+                }
+            }
             steps {
                 sh '''
                     for i in 1 2 3 4 5; do
