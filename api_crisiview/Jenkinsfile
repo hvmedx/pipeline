@@ -287,7 +287,7 @@ pipeline {
             steps {
                 sh '''
                     for i in $(seq 1 15); do
-                        code=$(curl -o /dev/null -s -w "%{http_code}" http://localhost:3101/health || echo 000)
+                        code=$(curl -o /dev/null -s -w "%{http_code}" http://crisisview-api:3001/health || echo 000)
                         if [ "$code" = "200" ]; then echo "API healthy"; exit 0; fi
                         sleep 3
                     done
