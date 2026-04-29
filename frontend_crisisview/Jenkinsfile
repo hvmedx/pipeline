@@ -141,10 +141,12 @@ pipeline {
         stage('Scan image (Trivy)') {
             steps {
                 sh '''
+                    mkdir -p .trivy-cache
                     docker run --rm \
                         -v /var/run/docker.sock:/var/run/docker.sock \
+                        -v "$PWD/.trivy-cache:/root/.cache/trivy" \
                         aquasec/trivy:latest image \
-                        --severity HIGH,CRITICAL --exit-code 0 --no-progress \
+                        --severity HIGH,CRITICAL --exit-code 0 --no-progress --timeout 10m \
                         ${IMAGE_FULL} || true
                 '''
             }

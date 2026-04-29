@@ -194,11 +194,13 @@ pipeline {
                 sh '''
                     # Generate JSON report (always succeeds, archived)
                     rm -f trivy-api.json
+                    mkdir -p .trivy-cache
                     docker run --rm \
                         -v /var/run/docker.sock:/var/run/docker.sock \
+                        -v "$PWD/.trivy-cache:/root/.cache/trivy" \
                         -v "$PWD:/workspace" \
                         aquasec/trivy:latest image \
-                        --severity HIGH,CRITICAL --no-progress --format json \
+                        --severity HIGH,CRITICAL --no-progress --timeout 10m --format json \
                         --output /workspace/trivy-api.json ${IMAGE_FULL} || true
                     if [ ! -s trivy-api.json ]; then
                         echo '{"error":"trivy report was not generated"}' > trivy-api.json
@@ -207,8 +209,9 @@ pipeline {
                     # Hard gate: fail the build on any CRITICAL.
                     docker run --rm \
                         -v /var/run/docker.sock:/var/run/docker.sock \
+                        -v "$PWD/.trivy-cache:/root/.cache/trivy" \
                         aquasec/trivy:latest image \
-                        --severity CRITICAL --exit-code 1 --no-progress \
+                        --severity CRITICAL --exit-code 1 --no-progress --timeout 10m --skip-db-update --skip-java-db-update \
                         ${IMAGE_FULL}
                 '''
             }
