@@ -1,84 +1,145 @@
+// Pipeline: CrisisView API (Express + Sequelize + MySQL)
+// CI:  install → lint → test (unit + integration) → SCA (npm audit) → SonarQube + Quality Gate
+// CD:  build image → SBOM (syft) → scan (Trivy) → push DockerHub → deploy compose → smoke test
+// Rollback: redeploys the previously published :previous tag without rebuilding.
+
 pipeline {
     agent any
 
-    environment {
-        IMAGE_NAME    = 'crisisview-api'
-        IMAGE_TAG     = "${env.BUILD_NUMBER}"
-        SONAR_PROJECT = 'crisisview-api'
-        DEPLOY_DIR    = "${env.WORKSPACE}/../deploy"
-    }
-
     options {
         timestamps()
+        ansiColor('xterm')
+        disableConcurrentBuilds()
         timeout(time: 30, unit: 'MINUTES')
-        buildDiscarder(logRotator(numToKeepStr: '10'))
+        buildDiscarder(logRotator(numToKeepStr: '20'))
+    }
+
+    parameters {
+        booleanParam(name: 'ROLLBACK', defaultValue: false,
+                     description: 'Skip build/test/scan and redeploy the :previous tag.')
+    }
+
+    environment {
+        IMAGE_NAME      = 'crisisview-api'
+        DOCKERHUB_USER  = credentials('dockerhub-user')
+        DOCKERHUB_CREDS = 'dockerhub-creds'
+        CONTAINER_NAME  = 'crisisview-api'
+        DEVOPS_NETWORK  = 'devops'
+        IMAGE_TAG       = "${env.BUILD_NUMBER}"
+        IMAGE_FULL      = "${DOCKERHUB_USER}/${IMAGE_NAME}:${IMAGE_TAG}"
+        IMAGE_LATEST    = "${DOCKERHUB_USER}/${IMAGE_NAME}:latest"
+        IMAGE_PREVIOUS  = "${DOCKERHUB_USER}/${IMAGE_NAME}:previous"
+        // Integration test DB (sidecar started in the Integration Tests stage)
+        DB_CONTAINER    = 'crisisview-mysql-ci'
+        DB_NAME         = 'incident_db'
     }
 
     stages {
 
         stage('Checkout') {
+            steps { checkout scm }
+        }
+
+        stage('Install') {
+            when { not { expression { return params.ROLLBACK } } }
             steps {
-                checkout scm
+                dir('api_crisiview') { sh 'node --version && npm --version && npm ci' }
             }
         }
 
-        stage('Install Dependencies') {
+        stage('Lint') {
+            when { not { expression { return params.ROLLBACK } } }
             steps {
-                sh 'node --version && npm --version'
-                sh 'npm ci'
+                dir('api_crisiview') {
+                    sh '''
+                        if [ -f eslint.config.js ] || [ -f .eslintrc.json ]; then
+                            npx --yes eslint "**/*.js" --ignore-pattern node_modules || true
+                        else
+                            echo "No ESLint config — skipping lint"
+                        fi
+                    '''
+                }
             }
         }
 
         stage('Unit Tests') {
+            when { not { expression { return params.ROLLBACK } } }
             steps {
-                sh 'npm test -- --coverage --testPathPatterns=incident.routes.test.js --ci'
-            }
-            post {
-                always {
-                    archiveArtifacts artifacts: 'coverage/**', allowEmptyArchive: true
+                dir('api_crisiview') {
+                    sh 'npm test -- --coverage --testPathPatterns=incident.routes.test.js --ci'
                 }
             }
         }
 
         stage('Integration Tests') {
+            when { not { expression { return params.ROLLBACK } } }
             steps {
-                sh '''
-                    docker rm -f mysql-ci 2>/dev/null || true
-                    docker run -d --name mysql-ci \
-                        -e MYSQL_ROOT_PASSWORD=root \
-                        -e MYSQL_DATABASE=incident_db \
-                        -p 3307:3306 \
-                        mysql:8.0
-                    echo "Waiting for MySQL to become healthy..."
-                    for i in $(seq 1 30); do
-                      if docker exec mysql-ci mysqladmin ping -uroot -proot --silent 2>/dev/null; then
-                        echo "MySQL is up"; break
-                      fi
-                      sleep 2
-                    done
-                '''
-                sh '''
-                    DB_NAME=incident_db DB_USER=root DB_PASSWORD=root \
-                    DB_HOST=127.0.0.1 DB_PORT=3307 \
-                    npm test -- --testPathPatterns=technicien.integration.test.js --ci || EXIT=$?
-                    docker rm -f mysql-ci || true
-                    exit ${EXIT:-0}
-                '''
+                dir('api_crisiview') {
+                    sh '''
+                        docker rm -f ${DB_CONTAINER} 2>/dev/null || true
+                        docker run -d --name ${DB_CONTAINER} \
+                            --network ${DEVOPS_NETWORK} \
+                            -e MYSQL_ROOT_PASSWORD=root \
+                            -e MYSQL_DATABASE=${DB_NAME} \
+                            mysql:8.0
+                        echo "Waiting for MySQL..."
+                        for i in $(seq 1 30); do
+                            if docker exec ${DB_CONTAINER} mysqladmin ping -uroot -proot --silent 2>/dev/null; then
+                                echo "MySQL ready"; break
+                            fi
+                            sleep 2
+                        done
+                    '''
+                    sh '''
+                        DB_NAME=${DB_NAME} DB_USER=root DB_PASSWORD=root \
+                        DB_HOST=${DB_CONTAINER} DB_PORT=3306 \
+                        npm test -- --testPathPatterns=technicien.integration.test.js --ci
+                    '''
+                }
+            }
+            post {
+                always { sh "docker rm -f ${DB_CONTAINER} 2>/dev/null || true" }
+            }
+        }
+
+        stage('SCA (npm audit)') {
+            when { not { expression { return params.ROLLBACK } } }
+            steps {
+                dir('api_crisiview') {
+                    sh '''
+                        npm audit --omit=dev --json > npm-audit.json || true
+                        echo "--- npm audit summary ---"
+                        npm audit --omit=dev || true
+                    '''
+                }
+            }
+            post {
+                always {
+                    archiveArtifacts artifacts: 'api_crisiview/npm-audit.json',
+                                     allowEmptyArchive: true,
+                                     fingerprint: true
+                }
             }
         }
 
         stage('SonarQube Analysis') {
+            when { not { expression { return params.ROLLBACK } } }
             steps {
-                script {
-                    def scannerHome = tool 'SonarScanner'
-                    withSonarQubeEnv('SonarQube') {
-                        sh "${scannerHome}/bin/sonar-scanner"
+                dir('api_crisiview') {
+                    withSonarQubeEnv(installationName: 'sonarqube',
+                                     credentialsId: 'sonar-token-crisisview-api') {
+                        sh '''
+                            sonar-scanner \
+                                -Dsonar.host.url=$SONAR_HOST_URL \
+                                -Dsonar.token=$SONAR_AUTH_TOKEN
+                        '''
                     }
                 }
             }
         }
 
         stage('Quality Gate') {
+            when { not { expression { return params.ROLLBACK } } }
             steps {
                 timeout(time: 5, unit: 'MINUTES') {
                     waitForQualityGate abortPipeline: true
@@ -86,33 +147,137 @@ pipeline {
             }
         }
 
-        stage('Build Docker Image') {
+        stage('Build image') {
+            when { not { expression { return params.ROLLBACK } } }
             steps {
-                sh "docker build -t ${IMAGE_NAME}:${IMAGE_TAG} -t ${IMAGE_NAME}:latest ."
+                dir('api_crisiview') {
+                    sh '''
+                        docker build \
+                            --build-arg BUILD_SHA=${GIT_COMMIT:-${BUILD_NUMBER}} \
+                            -t ${IMAGE_FULL} \
+                            -t ${IMAGE_LATEST} .
+                    '''
+                }
             }
         }
 
-        stage('Deploy to Staging') {
+        stage('SBOM (syft)') {
+            when { not { expression { return params.ROLLBACK } } }
             steps {
                 sh '''
-                    cd "${DEPLOY_DIR}"
-                    docker compose up -d api mysql
-                    sleep 5
-                    docker compose ps
+                    docker run --rm \
+                        -v /var/run/docker.sock:/var/run/docker.sock \
+                        anchore/syft:latest \
+                        ${IMAGE_FULL} -o spdx-json > sbom-api.json
+                '''
+            }
+            post {
+                always {
+                    archiveArtifacts artifacts: 'sbom-api.json',
+                                     allowEmptyArchive: true,
+                                     fingerprint: true
+                }
+            }
+        }
+
+        stage('Scan image (Trivy)') {
+            when { not { expression { return params.ROLLBACK } } }
+            steps {
+                sh '''
+                    # Generate JSON report (always succeeds, archived)
+                    docker run --rm \
+                        -v /var/run/docker.sock:/var/run/docker.sock \
+                        aquasec/trivy:latest image \
+                        --severity HIGH,CRITICAL --no-progress --format json \
+                        --output /tmp/trivy.json ${IMAGE_FULL} || true
+                    docker run --rm -v /tmp:/tmp aquasec/trivy:latest --version >/dev/null 2>&1 || true
+                    cp /tmp/trivy.json trivy-api.json 2>/dev/null || true
+
+                    # Hard gate: fail the build on any CRITICAL.
+                    docker run --rm \
+                        -v /var/run/docker.sock:/var/run/docker.sock \
+                        aquasec/trivy:latest image \
+                        --severity CRITICAL --exit-code 1 --no-progress \
+                        ${IMAGE_FULL}
+                '''
+            }
+            post {
+                always {
+                    archiveArtifacts artifacts: 'trivy-api.json',
+                                     allowEmptyArchive: true,
+                                     fingerprint: true
+                }
+            }
+        }
+
+        stage('Promote: push DockerHub') {
+            when {
+                allOf {
+                    branch 'main'
+                    not { expression { return params.ROLLBACK } }
+                }
+            }
+            steps {
+                withCredentials([usernamePassword(credentialsId: env.DOCKERHUB_CREDS,
+                                                  usernameVariable: 'DH_USER',
+                                                  passwordVariable: 'DH_PASS')]) {
+                    sh '''
+                        echo "$DH_PASS" | docker login -u "$DH_USER" --password-stdin
+
+                        # Rollback safety: snapshot current :latest as :previous before overwriting.
+                        if docker pull ${IMAGE_LATEST} >/dev/null 2>&1; then
+                            docker tag  ${IMAGE_LATEST} ${IMAGE_PREVIOUS}
+                            docker push ${IMAGE_PREVIOUS}
+                        else
+                            echo "No prior :latest to snapshot — first release."
+                        fi
+
+                        docker push ${IMAGE_FULL}
+                        docker push ${IMAGE_LATEST}
+                        docker logout
+                    '''
+                }
+            }
+        }
+
+        stage('Deploy: docker compose') {
+            when { branch 'main' }
+            steps {
+                script {
+                    def deployTag = params.ROLLBACK ? 'previous' : 'latest'
+                    sh """
+                        cd deploy
+                        export DOCKERHUB_USER=${DOCKERHUB_USER}
+                        export API_TAG=${deployTag}
+                        docker compose pull api || true
+                        docker compose up -d mysql api
+                        docker compose ps
+                    """
+                }
+            }
+        }
+
+        stage('Smoke test') {
+            when { branch 'main' }
+            steps {
+                sh '''
+                    for i in $(seq 1 15); do
+                        code=$(curl -o /dev/null -s -w "%{http_code}" http://localhost:3101/health || echo 000)
+                        if [ "$code" = "200" ]; then echo "API healthy"; exit 0; fi
+                        sleep 3
+                    done
+                    echo "API /health did not come up (last code: $code)"; exit 1
                 '''
             }
         }
     }
 
     post {
-        success {
-            echo "Pipeline OK — image ${IMAGE_NAME}:${IMAGE_TAG}"
-        }
-        failure {
-            echo 'Pipeline FAILED — check stage logs'
-        }
         always {
-            sh 'docker rm -f mysql-ci 2>/dev/null || true'
+            sh 'docker image prune -f || true'
+            cleanWs()
         }
+        success { echo "Build #${env.BUILD_NUMBER} (${env.IMAGE_FULL}) ${params.ROLLBACK ? 'rolled back' : 'deployed'}" }
+        failure { echo "Build #${env.BUILD_NUMBER} FAILED" }
     }
 }

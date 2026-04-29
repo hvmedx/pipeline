@@ -18,6 +18,15 @@ app.use('/techniciens', technicienRoutes);
 app.use('/incidents', incidentRoutes);
 app.use('/interventions', interventionRoutes);
 
+app.get('/health', async (req, res) => {
+    try {
+        await sequelize.authenticate();
+        res.json({ ok: true });
+    } catch (err) {
+        res.status(500).json({ ok: false });
+    }
+});
+
 async function start() {
     try {
         await sequelize.authenticate();

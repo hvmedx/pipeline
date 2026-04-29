@@ -16,12 +16,10 @@ services:
       timeout: 5s
       retries: 10
     networks:
-      - crisisview
+      - devops
 
   api:
-    image: crisisview-api:latest
-    build:
-      context: ../api_crisiview
+    image: ${DOCKERHUB_USER:-local}/crisisview-api:${API_TAG:-dev}
     container_name: crisisview-api
     restart: unless-stopped
     depends_on:
@@ -36,12 +34,10 @@ services:
     ports:
       - "3101:3001"
     networks:
-      - crisisview
+      - devops
 
   frontend:
-    image: crisisview-frontend:latest
-    build:
-      context: ../frontend_crisisview
+    image: ${DOCKERHUB_USER:-local}/crisisview-frontend:${FE_TAG:-dev}
     container_name: crisisview-frontend
     restart: unless-stopped
     depends_on:
@@ -51,11 +47,12 @@ services:
     ports:
       - "3100:3000"
     networks:
-      - crisisview
+      - devops
 
 volumes:
   mysql_data:
 
 networks:
-  crisisview:
-    driver: bridge
+  devops:
+    external: true
+    name: devops

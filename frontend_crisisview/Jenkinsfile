@@ -1,17 +1,27 @@
+// Pipeline: CrisisView Frontend (Next.js)
+// CI:  install → lint → build → SonarQube + Quality Gate
+// CD:  build image → scan (Trivy) → push DockerHub → deploy on devops network → smoke test
+
 pipeline {
     agent any
 
-    environment {
-        IMAGE_NAME    = 'crisisview-frontend'
-        IMAGE_TAG     = "${env.BUILD_NUMBER}"
-        SONAR_PROJECT = 'crisisview-frontend'
-        DEPLOY_DIR    = "${env.WORKSPACE}/../deploy"
-    }
-
     options {
         timestamps()
+        ansiColor('xterm')
+        disableConcurrentBuilds()
         timeout(time: 30, unit: 'MINUTES')
-        buildDiscarder(logRotator(numToKeepStr: '10'))
+        buildDiscarder(logRotator(numToKeepStr: '20'))
+    }
+
+    environment {
+        IMAGE_NAME      = 'crisisview-frontend'
+        DOCKERHUB_USER  = credentials('dockerhub-user')
+        DOCKERHUB_CREDS = 'dockerhub-creds'
+        CONTAINER_NAME  = 'crisisview-frontend'
+        DEVOPS_NETWORK  = 'devops'
+        IMAGE_TAG       = "${env.BUILD_NUMBER}"
+        IMAGE_FULL      = "${DOCKERHUB_USER}/${IMAGE_NAME}:${IMAGE_TAG}"
+        IMAGE_LATEST    = "${DOCKERHUB_USER}/${IMAGE_NAME}:latest"
     }
 
     stages {
@@ -22,36 +32,41 @@ pipeline {
             }
         }
 
-        stage('Install Dependencies') {
+        stage('Install') {
             steps {
-                sh 'node --version && npm --version'
-                sh 'npm ci'
+                dir('frontend_crisisview') {
+                    sh 'node --version && npm --version'
+                    sh 'npm ci'
+                }
             }
         }
 
         stage('Lint') {
             steps {
-                sh 'npm run lint || true'
+                dir('frontend_crisisview') {
+                    sh 'npm run lint || true'
+                }
             }
         }
 
         stage('Build') {
             steps {
-                sh 'npm run build'
-            }
-            post {
-                success {
-                    archiveArtifacts artifacts: '.next/**', allowEmptyArchive: true
+                dir('frontend_crisisview') {
+                    sh 'npm run build'
                 }
             }
         }
 
-        stage('SonarQube Analysis') {
+        stage('SonarQube') {
             steps {
-                script {
-                    def scannerHome = tool 'SonarScanner'
-                    withSonarQubeEnv('SonarQube') {
-                        sh "${scannerHome}/bin/sonar-scanner"
+                dir('frontend_crisisview') {
+                    withSonarQubeEnv(installationName: 'sonarqube',
+                                     credentialsId: 'sonar-token-crisisview-frontend') {
+                        sh '''
+                            sonar-scanner \
+                                -Dsonar.host.url=$SONAR_HOST_URL \
+                                -Dsonar.token=$SONAR_AUTH_TOKEN
+                        '''
                     }
                 }
             }
@@ -65,30 +80,84 @@ pipeline {
             }
         }
 
-        stage('Build Docker Image') {
+        stage('Build image') {
             steps {
-                sh "docker build -t ${IMAGE_NAME}:${IMAGE_TAG} -t ${IMAGE_NAME}:latest ."
+                dir('frontend_crisisview') {
+                    sh '''
+                        docker build \
+                            --build-arg BUILD_SHA=${GIT_COMMIT:-${BUILD_NUMBER}} \
+                            -t ${IMAGE_FULL} \
+                            -t ${IMAGE_LATEST} .
+                    '''
+                }
             }
         }
 
-        stage('Deploy to Staging') {
+        stage('Scan image (Trivy)') {
             steps {
                 sh '''
-                    cd "${DEPLOY_DIR}"
-                    docker compose up -d frontend
-                    sleep 5
-                    docker compose ps
+                    docker run --rm \
+                        -v /var/run/docker.sock:/var/run/docker.sock \
+                        aquasec/trivy:latest image \
+                        --severity HIGH,CRITICAL --exit-code 0 --no-progress \
+                        ${IMAGE_FULL} || true
+                '''
+            }
+        }
+
+        stage('Promote: push DockerHub') {
+            when { branch 'main' }
+            steps {
+                withCredentials([usernamePassword(credentialsId: env.DOCKERHUB_CREDS,
+                                                  usernameVariable: 'DH_USER',
+                                                  passwordVariable: 'DH_PASS')]) {
+                    sh '''
+                        echo "$DH_PASS" | docker login -u "$DH_USER" --password-stdin
+                        docker push ${IMAGE_FULL}
+                        docker push ${IMAGE_LATEST}
+                        docker logout
+                    '''
+                }
+            }
+        }
+
+        stage('Deploy: docker run') {
+            when { branch 'main' }
+            steps {
+                sh '''
+                    docker rm -f ${CONTAINER_NAME} 2>/dev/null || true
+                    docker run -d \
+                        --name ${CONTAINER_NAME} \
+                        --network ${DEVOPS_NETWORK} \
+                        --restart unless-stopped \
+                        -p 3100:3000 \
+                        ${IMAGE_FULL}
+                    docker image prune -f
+                '''
+            }
+        }
+
+        stage('Smoke test') {
+            when { branch 'main' }
+            steps {
+                sh '''
+                    for i in 1 2 3 4 5; do
+                        code=$(curl -o /dev/null -s -w "%{http_code}" http://localhost:3100/ || echo 000)
+                        if [ "$code" = "200" ]; then echo "Frontend OK"; exit 0; fi
+                        sleep 3
+                    done
+                    echo "Frontend smoke test failed (last code: $code)"; exit 1
                 '''
             }
         }
     }
 
     post {
-        success {
-            echo "Pipeline OK — image ${IMAGE_NAME}:${IMAGE_TAG}"
+        always {
+            sh 'docker image prune -f || true'
+            cleanWs()
         }
-        failure {
-            echo 'Pipeline FAILED — check stage logs'
-        }
+        success { echo "Build #${env.BUILD_NUMBER} (${env.IMAGE_FULL}) deployed" }
+        failure { echo "Build #${env.BUILD_NUMBER} FAILED" }
     }
 }
