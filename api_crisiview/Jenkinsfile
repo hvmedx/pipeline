@@ -1,0 +1,118 @@
+pipeline {
+    agent any
+
+    environment {
+        IMAGE_NAME    = 'crisisview-api'
+        IMAGE_TAG     = "${env.BUILD_NUMBER}"
+        SONAR_PROJECT = 'crisisview-api'
+        DEPLOY_DIR    = "${env.WORKSPACE}/../deploy"
+    }
+
+    options {
+        timestamps()
+        timeout(time: 30, unit: 'MINUTES')
+        buildDiscarder(logRotator(numToKeepStr: '10'))
+    }
+
+    stages {
+
+        stage('Checkout') {
+            steps {
+                checkout scm
+            }
+        }
+
+        stage('Install Dependencies') {
+            steps {
+                sh 'node --version && npm --version'
+                sh 'npm ci'
+            }
+        }
+
+        stage('Unit Tests') {
+            steps {
+                sh 'npm test -- --coverage --testPathPatterns=incident.routes.test.js --ci'
+            }
+            post {
+                always {
+                    archiveArtifacts artifacts: 'coverage/**', allowEmptyArchive: true
+                }
+            }
+        }
+
+        stage('Integration Tests') {
+            steps {
+                sh '''
+                    docker rm -f mysql-ci 2>/dev/null || true
+                    docker run -d --name mysql-ci \
+                        -e MYSQL_ROOT_PASSWORD=root \
+                        -e MYSQL_DATABASE=incident_db \
+                        -p 3307:3306 \
+                        mysql:8.0
+                    echo "Waiting for MySQL to become healthy..."
+                    for i in $(seq 1 30); do
+                      if docker exec mysql-ci mysqladmin ping -uroot -proot --silent 2>/dev/null; then
+                        echo "MySQL is up"; break
+                      fi
+                      sleep 2
+                    done
+                '''
+                sh '''
+                    DB_NAME=incident_db DB_USER=root DB_PASSWORD=root \
+                    DB_HOST=127.0.0.1 DB_PORT=3307 \
+                    npm test -- --testPathPatterns=technicien.integration.test.js --ci || EXIT=$?
+                    docker rm -f mysql-ci || true
+                    exit ${EXIT:-0}
+                '''
+            }
+        }
+
+        stage('SonarQube Analysis') {
+            steps {
+                script {
+                    def scannerHome = tool 'SonarScanner'
+                    withSonarQubeEnv('SonarQube') {
+                        sh "${scannerHome}/bin/sonar-scanner"
+                    }
+                }
+            }
+        }
+
+        stage('Quality Gate') {
+            steps {
+                timeout(time: 5, unit: 'MINUTES') {
+                    waitForQualityGate abortPipeline: true
+                }
+            }
+        }
+
+        stage('Build Docker Image') {
+            steps {
+                sh "docker build -t ${IMAGE_NAME}:${IMAGE_TAG} -t ${IMAGE_NAME}:latest ."
+            }
+        }
+
+        stage('Deploy to Staging') {
+            steps {
+                sh '''
+                    cd "${DEPLOY_DIR}"
+                    docker compose up -d api mysql
+                    sleep 5
+                    docker compose ps
+                '''
+            }
+        }
+    }
+
+    post {
+        success {
+            echo "Pipeline OK — image ${IMAGE_NAME}:${IMAGE_TAG}"
+        }
+        failure {
+            echo 'Pipeline FAILED — check stage logs'
+        }
+        always {
+            sh 'docker rm -f mysql-ci 2>/dev/null || true'
+        }
+    }
+}

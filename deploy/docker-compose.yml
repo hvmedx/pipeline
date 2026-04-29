@@ -1,0 +1,61 @@
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: crisisview-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: incident_db
+    ports:
+      - "3307:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-uroot", "-proot"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - crisisview
+
+  api:
+    image: crisisview-api:latest
+    build:
+      context: ../api_crisiview
+    container_name: crisisview-api
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      DB_NAME: incident_db
+      DB_USER: root
+      DB_PASSWORD: root
+      DB_HOST: mysql
+      DB_PORT: 3306
+    ports:
+      - "3101:3001"
+    networks:
+      - crisisview
+
+  frontend:
+    image: crisisview-frontend:latest
+    build:
+      context: ../frontend_crisisview
+    container_name: crisisview-frontend
+    restart: unless-stopped
+    depends_on:
+      - api
+    environment:
+      NODE_ENV: production
+    ports:
+      - "3100:3000"
+    networks:
+      - crisisview
+
+volumes:
+  mysql_data:
+
+networks:
+  crisisview:
+    driver: bridge

@@ -1,0 +1,94 @@
+pipeline {
+    agent any
+
+    environment {
+        IMAGE_NAME    = 'crisisview-frontend'
+        IMAGE_TAG     = "${env.BUILD_NUMBER}"
+        SONAR_PROJECT = 'crisisview-frontend'
+        DEPLOY_DIR    = "${env.WORKSPACE}/../deploy"
+    }
+
+    options {
+        timestamps()
+        timeout(time: 30, unit: 'MINUTES')
+        buildDiscarder(logRotator(numToKeepStr: '10'))
+    }
+
+    stages {
+
+        stage('Checkout') {
+            steps {
+                checkout scm
+            }
+        }
+
+        stage('Install Dependencies') {
+            steps {
+                sh 'node --version && npm --version'
+                sh 'npm ci'
+            }
+        }
+
+        stage('Lint') {
+            steps {
+                sh 'npm run lint || true'
+            }
+        }
+
+        stage('Build') {
+            steps {
+                sh 'npm run build'
+            }
+            post {
+                success {
+                    archiveArtifacts artifacts: '.next/**', allowEmptyArchive: true
+                }
+            }
+        }
+
+        stage('SonarQube Analysis') {
+            steps {
+                script {
+                    def scannerHome = tool 'SonarScanner'
+                    withSonarQubeEnv('SonarQube') {
+                        sh "${scannerHome}/bin/sonar-scanner"
+                    }
+                }
+            }
+        }
+
+        stage('Quality Gate') {
+            steps {
+                timeout(time: 5, unit: 'MINUTES') {
+                    waitForQualityGate abortPipeline: true
+                }
+            }
+        }
+
+        stage('Build Docker Image') {
+            steps {
+                sh "docker build -t ${IMAGE_NAME}:${IMAGE_TAG} -t ${IMAGE_NAME}:latest ."
+            }
+        }
+
+        stage('Deploy to Staging') {
+            steps {
+                sh '''
+                    cd "${DEPLOY_DIR}"
+                    docker compose up -d frontend
+                    sleep 5
+                    docker compose ps
+                '''
+            }
+        }
+    }
+
+    post {
+        success {
+            echo "Pipeline OK — image ${IMAGE_NAME}:${IMAGE_TAG}"
+        }
+        failure {
+            echo 'Pipeline FAILED — check stage logs'
+        }
+    }
+}
