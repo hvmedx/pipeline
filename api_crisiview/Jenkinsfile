@@ -200,6 +200,9 @@ pipeline {
                         aquasec/trivy:latest image \
                         --severity HIGH,CRITICAL --no-progress --format json \
                         --output /workspace/trivy-api.json ${IMAGE_FULL} || true
+                    if [ ! -s trivy-api.json ]; then
+                        echo '{"error":"trivy report was not generated"}' > trivy-api.json
+                    fi
 
                     # Hard gate: fail the build on any CRITICAL.
                     docker run --rm \
