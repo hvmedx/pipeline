@@ -22,6 +22,10 @@ type Intervention = {
   id_technicien: number;
 };
 
+type IncidentMapProps = Readonly<{
+  incidents: ReadonlyArray<Incident>;
+}>;
+
 // Fix default marker icons (Leaflet bug in Next)
 delete (L.Icon.Default.prototype as { _getIconUrl?: unknown })._getIconUrl;
 L.Icon.Default.mergeOptions({
@@ -59,11 +63,7 @@ const blueIcon = new L.Icon({
   shadowSize: [41, 41],
 });
 
-export default function Map({
-  incidents,
-}: {
-  incidents: Incident[];
-}) {
+export default function IncidentMap({ incidents }: IncidentMapProps) {
   const [interventions, setInterventions] = useState<Intervention[]>([]);
 
   useEffect(() => {
