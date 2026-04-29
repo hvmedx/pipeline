@@ -220,9 +220,12 @@ pipeline {
 
         stage('Promote: push DockerHub') {
             when {
-                allOf {
-                    branch 'main'
-                    not { expression { return params.ROLLBACK } }
+                expression {
+                    def isMain = (env.BRANCH_NAME == 'main') ||
+                                 (env.GIT_BRANCH == 'main') ||
+                                 (env.GIT_BRANCH == 'origin/main') ||
+                                 (env.GIT_LOCAL_BRANCH == 'main')
+                    return isMain && !params.ROLLBACK
                 }
             }
             steps {
@@ -249,7 +252,14 @@ pipeline {
         }
 
         stage('Deploy: docker compose') {
-            when { branch 'main' }
+            when {
+                expression {
+                    return (env.BRANCH_NAME == 'main') ||
+                           (env.GIT_BRANCH == 'main') ||
+                           (env.GIT_BRANCH == 'origin/main') ||
+                           (env.GIT_LOCAL_BRANCH == 'main')
+                }
+            }
             steps {
                 script {
                     def deployTag = params.ROLLBACK ? 'previous' : 'latest'
@@ -266,7 +276,14 @@ pipeline {
         }
 
         stage('Smoke test') {
-            when { branch 'main' }
+            when {
+                expression {
+                    return (env.BRANCH_NAME == 'main') ||
+                           (env.GIT_BRANCH == 'main') ||
+                           (env.GIT_BRANCH == 'origin/main') ||
+                           (env.GIT_LOCAL_BRANCH == 'main')
+                }
+            }
             steps {
                 sh '''
                     for i in $(seq 1 15); do
