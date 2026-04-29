@@ -84,16 +84,24 @@ pipeline {
                             mysql:8.0
                         echo "Waiting for MySQL..."
                         for i in $(seq 1 30); do
-                            if docker exec ${DB_CONTAINER} mysqladmin ping -uroot -proot --silent 2>/dev/null; then
+                            if docker exec ${DB_CONTAINER} mysqladmin ping -h127.0.0.1 -uroot -proot --silent 2>/dev/null; then
                                 echo "MySQL ready"; break
                             fi
                             sleep 2
                         done
+                        # Give mysqld a short grace window for external TCP acceptance.
+                        sleep 5
                     '''
                     sh '''
-                        DB_NAME=${DB_NAME} DB_USER=root DB_PASSWORD=root \
-                        DB_HOST=${DB_CONTAINER} DB_PORT=3306 \
-                        npm test -- --testPathPatterns=technicien.integration.test.js --ci
+                        for i in 1 2 3; do
+                            DB_NAME=${DB_NAME} DB_USER=root DB_PASSWORD=root \
+                            DB_HOST=${DB_CONTAINER} DB_PORT=3306 \
+                            npm test -- --testPathPatterns=technicien.integration.test.js --ci && exit 0
+                            echo "Integration test attempt $i failed, retrying..."
+                            sleep 3
+                        done
+                        echo "Integration tests failed after retries"
+                        exit 1
                     '''
                 }
             }
