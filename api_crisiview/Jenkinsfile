@@ -10,7 +10,7 @@ pipeline {
         timestamps()
         ansiColor('xterm')
         disableConcurrentBuilds()
-        timeout(time: 30, unit: 'MINUTES')
+        timeout(time: 60, unit: 'MINUTES')
         buildDiscarder(logRotator(numToKeepStr: '20'))
     }
 
@@ -149,7 +149,7 @@ pipeline {
         stage('Quality Gate') {
             when { not { expression { return params.ROLLBACK } } }
             steps {
-                timeout(time: 5, unit: 'MINUTES') {
+                timeout(time: 15, unit: 'MINUTES') {
                     waitForQualityGate abortPipeline: true
                 }
             }
