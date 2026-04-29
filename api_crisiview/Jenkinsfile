@@ -193,13 +193,13 @@ pipeline {
             steps {
                 sh '''
                     # Generate JSON report (always succeeds, archived)
+                    rm -f trivy-api.json
                     docker run --rm \
                         -v /var/run/docker.sock:/var/run/docker.sock \
+                        -v "$PWD:/workspace" \
                         aquasec/trivy:latest image \
                         --severity HIGH,CRITICAL --no-progress --format json \
-                        --output /tmp/trivy.json ${IMAGE_FULL} || true
-                    docker run --rm -v /tmp:/tmp aquasec/trivy:latest --version >/dev/null 2>&1 || true
-                    cp /tmp/trivy.json trivy-api.json 2>/dev/null || true
+                        --output /workspace/trivy-api.json ${IMAGE_FULL} || true
 
                     # Hard gate: fail the build on any CRITICAL.
                     docker run --rm \
