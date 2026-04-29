@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 type Intervention = {
   id: number;
@@ -37,7 +37,7 @@ export default function InterventionsAdmin() {
   const [editingId, setEditingId] = useState<number | null>(null);
 
   // ---------------- FETCH ----------------
-  const fetchAll = async () => {
+  const fetchAll = useCallback(async () => {
     const [r, u, p] = await Promise.all([
       fetch(API_INT).then((res) => res.json()),
       fetch(API_TECHNICIENS).then((res) => res.json()),
@@ -47,11 +47,13 @@ export default function InterventionsAdmin() {
     setInterventions(r);
     setTechniciens(u);
     setIncidents(p);
-  };
+  }, []);
 
   useEffect(() => {
-    fetchAll();
-  }, []);
+    void (async () => {
+      await fetchAll();
+    })();
+  }, [fetchAll]);
 
   // ---------------- CREATE / UPDATE ----------------
   const handleSubmit = async () => {

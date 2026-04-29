@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 type Technicien = {
   id: number;
@@ -23,15 +23,17 @@ export default function TechniciensAdmin() {
   const [editingId, setEditingId] = useState<number | null>(null);
 
   // ---------------- FETCH ----------------
-  const fetchTechniciens = async () => {
+  const fetchTechniciens = useCallback(async () => {
     const res = await fetch(API);
     const data = await res.json();
     setTechniciens(data);
-  };
+  }, []);
 
   useEffect(() => {
-    fetchTechniciens();
-  }, []);
+    void (async () => {
+      await fetchTechniciens();
+    })();
+  }, [fetchTechniciens]);
 
   // ---------------- CREATE / UPDATE ----------------
   const handleSubmit = async () => {

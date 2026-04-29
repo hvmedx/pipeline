@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 type Incident = {
   id: number;
@@ -16,15 +16,17 @@ export default function IncidentAdmin() {
   const [form, setForm] = useState({ name: "", latitude: 0, longitude: 0 });
   const [editingId, setEditingId] = useState<number | null>(null);
 
-  const fetchIncidents = async () => {
+  const fetchIncidents = useCallback(async () => {
     const res = await fetch(API);
     const data = await res.json();
     setIncidents(data);
-  };
+  }, []);
 
   useEffect(() => {
-    fetchIncidents();
-  }, []);
+    void (async () => {
+      await fetchIncidents();
+    })();
+  }, [fetchIncidents]);
 
   const handleSubmit = async () => {
     if (editingId) {
